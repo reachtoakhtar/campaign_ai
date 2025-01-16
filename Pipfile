@@ -1,0 +1,26 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+langchain = "*"
+langchain-openai = "*"
+pypdf = "*"
+langchain-community = "*"
+langgraph = "*"
+chromadb = "*"
+langchain-chroma = ">=0.1.2"
+python-dotenv = "*"
+fastapi = "*"
+uvicorn = "*"
+python-multipart = "*"
+python-docx = "*"
+requests = "*"
+pillow = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"
+python_full_version = "3.12.7"
