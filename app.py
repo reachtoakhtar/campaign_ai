@@ -203,14 +203,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
                 image_url = response.data[0].url
-                print(image_url)
                 await manager.send_response({'response': image_url}, websocket)
 
                 base64_image = process_image_to_base64(response.data[0].url)
-
+                await manager.send_response({'response': base64_image}, websocket)
                 return {"image": base64_image, "imageGenerationNum": state.imageGenerationNum + 1}
 
-            def image_grade_node(state: GraphState):
+            async def image_grade_node(state: GraphState):
                 question = f"""
                 The LLM-generated image is produced based on the image prompt, which is derived from the userPrompt and a set of retrieved facts. There is no human in the loop to access or modify the LLM-generated image.
                 Your role is to act as an evaluator, evaluate if the LLM-generated image aligns with the userPrompt. Please provide with 'yes' or 'no' based on the following criteria:
@@ -225,7 +224,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 This is the userPrompt:
                 {state.userPrompt}
                 """
-                output=image_analysis(question, state.image, websocket)
+                print('inside image anaysis')
+                output = await image_analysis(question, state.image, websocket)
                 return {"imageAnalysis":output}
 
             system_prompt = """
@@ -287,8 +287,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 {state.userPrompt}
                 """
 
-
-                output=image_analysis(question, state.image, websocket)
+                output = await image_analysis(question, state.image, websocket)
 
                 feedback = 'Feedback about the image : {}'.format(
                      output
@@ -343,7 +342,6 @@ async def websocket_endpoint(websocket: WebSocket):
             pipeline.add_node('image_generation_feedback_node', image_generation_feedback_node)
             pipeline.add_node('mail_param_generation_node', mail_caption_subject_generation_node)
 
-
             pipeline.add_edge(START, 'retrieval_node')
             pipeline.add_edge('retrieval_node', 'prompt_generation_node')
             pipeline.add_edge('prompt_generation_node', 'image_generation_node')
@@ -366,13 +364,11 @@ async def websocket_endpoint(websocket: WebSocket):
             image_prompt=''
 
             outputs = await rag_pipeline.ainvoke(inputs)
-            print("outputs")
-            print(outputs)
+
             # for output in outputs:
             #     for key, value in output.items():
             #         print(f"Node: {key}")
             #         print(value)
-
 
             if file is not None:
                 os.remove(file_path)
@@ -460,7 +456,7 @@ async def image_analysis(question, encoded_image, websocket):
         raise SystemExit(f"Failed to make the request. Error: {e}")
 
     # Handle the response as needed (e.g., print or process)
-    output=response.json()
+    output = response.json()
     await manager.send_response(response.json(), websocket)
 
     return output['choices'][0]['message']['content']
