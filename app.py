@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import smtplib
 from email.message import EmailMessage
@@ -62,7 +63,7 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 vectorstore = Chroma(
-    embedding_function=AzureOpenAIEmbeddings(model="text-embedding-3-large",
+    embedding_function=AzureOpenAIEmbeddings(model=os.getenv('TEXT_MODEL'),
     api_key=os.getenv('AZURE_OPENAI_TEXT_API_KEY'),
     azure_endpoint= os.getenv('AZURE_OPENAI_TEXT_ENDPOINT'),
     azure_deployment=os.getenv('AZURE_OPENAI_TEXT_DEPLOYMENT_NAME'),
@@ -174,7 +175,7 @@ async def websocket_endpoint(websocket: WebSocket):
             ]
             )
             llm_engine = AzureChatOpenAI(
-            model="gpt-4o-mini",
+            model=os.getenv('MODEL'),
             api_key=os.getenv('AZURE_OPENAI_API_KEY'),
             azure_endpoint= os.getenv('AZURE_OPENAI_ENDPOINT'),
             azure_deployment=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME'),
@@ -197,7 +198,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await manager.send_response({'response': welcome}, websocket)
 
                 response = client.images.generate(
-                model="dall-e-3",
+                model=os.getenv('IMAGE_MODEL'),
                 prompt=state.generation,
                 size="1024x1024",
                 )
@@ -381,6 +382,78 @@ async def websocket_endpoint(websocket: WebSocket):
         await manager.send_response(response, websocket)
     except Exception as e:
         await manager.send_response({"response":str(e)}, websocket)
+
+
+@app.post("/file-process/")
+async def file_process(file: UploadFile = File(...)):
+    llm_engine = AzureChatOpenAI(
+        model=os.getenv('MODEL'),
+        api_key=os.getenv('AZURE_OPENAI_API_KEY'),
+        azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT'),
+        azure_deployment=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME'),
+        openai_api_version=os.getenv('AZURE_OPENAI_API_VERSION'),
+        temperature=0.7
+    )
+
+    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    with open(file_path, "wb") as temp_file:
+        temp_file.write(await file.read())
+
+    file_text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+    )
+    document = Document(file_path)
+    docx_text = "\n".join([paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()])
+
+    # Split the text into chunks
+    chunks = file_text_splitter.split_text(docx_text)
+    combined_text = " ".join(chunks)
+
+    # First, identify the product type and relevant categories
+    category_messages = [
+        {"role": "system", "content": """Analyze the text and identify:
+        1. The type of product being described
+        2. The most relevant 4-6 main feature categories for this type of product
+
+        Return ONLY a JSON object in this exact format:
+        {"product_type": "type", "categories": ["category1", "category2", "category3"]}"""},
+        {"role": "user", "content": combined_text}
+    ]
+
+    category_response = llm_engine.generate([category_messages])
+    # Clean and parse JSON response
+    try:
+        response_text = category_response.generations[0][0].text.strip()
+        # Remove any markdown code block indicators if present
+        response_text = response_text.replace('```json', '').replace('```', '').strip()
+        product_info = json.loads(response_text)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {response_text}")
+        raise e
+
+    # Now get summaries based on identified categories
+    summary_messages = [
+        {"role": "system", "content": f"""For this {product_info['product_type']}, provide a brief highlight 
+        for each of these categories: {', '.join(product_info['categories'])}
+
+        Return ONLY a JSON object where keys are the categories and values are brief highlights under 10 words each.
+        Example format: {{"category1": "highlight1", "category2": "highlight2"}}"""},
+        {"role": "user", "content": combined_text}
+    ]
+
+    summary_response = llm_engine.generate([summary_messages])
+    # Clean and parse JSON response
+    try:
+        response_text = summary_response.generations[0][0].text.strip()
+        # Remove any markdown code block indicators if present
+        response_text = response_text.replace('```json', '').replace('```', '').strip()
+        feature_summary = json.loads(response_text)
+        os.remove(file_path)
+        return feature_summary
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {response_text}")
+        raise e
 
 
 @app.post("/send-mail/")
