@@ -375,13 +375,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 os.remove(file_path)
 
             await manager.send_response({"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, websocket)
-            return JSONResponse(content={"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, status_code=200)
+            # return JSONResponse(content={"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, status_code=200)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        response = {"status_code": 500, "detail": f"Something went wrong."}
+        response = {"status_code": 500, "error": f"Something went wrong."}
         await manager.send_response(response, websocket)
     except Exception as e:
-        await manager.send_response({"response":str(e)}, websocket)
+        await manager.send_response({"error":str(e)}, websocket)
 
 
 @app.post("/file-process/")
