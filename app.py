@@ -63,7 +63,7 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 vectorstore = Chroma(
-    embedding_function=AzureOpenAIEmbeddings(model=os.getenv('TEXT_MODEL'),
+    embedding_function=AzureOpenAIEmbeddings(model=os.getenv('AZURE_OPENAI_TEXT_DEPLOYMENT_NAME'),
     api_key=os.getenv('AZURE_OPENAI_TEXT_API_KEY'),
     azure_endpoint= os.getenv('AZURE_OPENAI_TEXT_ENDPOINT'),
     azure_deployment=os.getenv('AZURE_OPENAI_TEXT_DEPLOYMENT_NAME'),
@@ -175,7 +175,7 @@ async def websocket_endpoint(websocket: WebSocket):
             ]
             )
             llm_engine = AzureChatOpenAI(
-            model=os.getenv('MODEL'),
+            model=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME'),
             api_key=os.getenv('AZURE_OPENAI_API_KEY'),
             azure_endpoint= os.getenv('AZURE_OPENAI_ENDPOINT'),
             azure_deployment=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME'),
@@ -198,7 +198,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await manager.send_response({'response': welcome}, websocket)
 
                 response = client.images.generate(
-                model=os.getenv('IMAGE_MODEL'),
+                model=os.getenv('AZURE_OPENAI_DALLE_DEPLOYMENT_NAME'),
                 prompt=state.generation,
                 size="1024x1024",
                 )
@@ -387,7 +387,7 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.post("/file-process/")
 async def file_process(file: UploadFile = File(...)):
     llm_engine = AzureChatOpenAI(
-        model=os.getenv('MODEL'),
+        model=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME'),
         api_key=os.getenv('AZURE_OPENAI_API_KEY'),
         azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT'),
         azure_deployment=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME'),
