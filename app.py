@@ -3,6 +3,7 @@ import io
 import json
 import os
 import smtplib
+import uuid
 from email.message import EmailMessage
 from typing import List, Optional
 
@@ -113,26 +114,29 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            file = await websocket.receive_bytes()
-            data = await websocket.receive_json()
-            input_text = data["prompt"]
-            filename = data["filename"]
-            if file:
-                 # Validate file type
-                if not filename.lower().endswith('.docx'):
-                        raise HTTPException(status_code=400, detail="Only DOCX files are allowed")
-
-                # Save the file to a temporary location
-                file_path = os.path.join(UPLOAD_FOLDER, filename)
-                with open(file_path, "wb") as temp_file:
-                    temp_file.write(file)
+            input_text = ''
+            feature_data = {}
+            file = None
+            filename = ''
+            try:
+                data = await websocket.receive_json()
+                input_text = data.get("prompt")
+                filename = data.get("filename")
+                feature_data = data.get('features')
+                await manager.send_response(
+                    {'data': data, 'input_text': input_text, 'filename': filename, 'feature_data': feature_data},
+                    websocket)
+            except Exception:
+                print('Data Error.')
+                await manager.send_response({'response': 'Data Error.'}, websocket)
 
             await manager.send_response({'response': 'Connected to server'}, websocket)
 
             def retriever_node(state: GraphState):
 
-                if file is not None:
+                if len(filename):
                 # Extract text from the DOCX file
+                    file_path = os.path.join(UPLOAD_FOLDER, filename)
                     document = Document(file_path)
                     docx_text = "\n".join([paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()])
 
@@ -395,7 +399,9 @@ async def file_process(file: UploadFile = File(...)):
         temperature=0.7
     )
 
-    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    file_ext = file.filename.split('.')[1]
+    file_name = f'{uuid.uuid4()}.{file_ext}'
+    file_path = os.path.join(UPLOAD_FOLDER, file_name)
     with open(file_path, "wb") as temp_file:
         temp_file.write(await file.read())
 
@@ -449,7 +455,8 @@ async def file_process(file: UploadFile = File(...)):
         # Remove any markdown code block indicators if present
         response_text = response_text.replace('```json', '').replace('```', '').strip()
         feature_summary = json.loads(response_text)
-        os.remove(file_path)
+        # os.remove(file_path)
+        feature_summary['filename'] = file_name
         return feature_summary
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON: {response_text}")
