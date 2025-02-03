@@ -7,7 +7,9 @@ import uuid
 from email.message import EmailMessage
 from typing import List, Optional
 
+import cv2
 import requests
+import numpy as np
 from PIL import Image
 from docx import Document
 from dotenv import load_dotenv
@@ -117,41 +119,18 @@ async def websocket_endpoint(websocket: WebSocket):
             input_text = ''
             feature_data = {}
             file = None
-            filename = ''
             try:
                 data = await websocket.receive_json()
                 input_text = data.get("prompt")
-                filename = data.get("filename")
                 feature_data = data.get('features')
                 await manager.send_response(
-                    {'data': data, 'input_text': input_text, 'filename': filename, 'feature_data': feature_data},
+                    {'data': data, 'input_text': input_text, 'feature_data': feature_data},
                     websocket)
             except Exception:
                 print('Data Error.')
                 await manager.send_response({'response': 'Data Error.'}, websocket)
 
             await manager.send_response({'response': 'Connected to server'}, websocket)
-
-            def retriever_node(state: GraphState):
-
-                if len(filename):
-                # Extract text from the DOCX file
-                    file_path = os.path.join(UPLOAD_FOLDER, filename)
-                    document = Document(file_path)
-                    docx_text = "\n".join([paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()])
-
-                    # Split the text into chunks
-                    chunks = text_splitter.split_text(docx_text)
-
-                    # Store the chunks in Chroma VectorDB
-                    vectorstore.add_texts(chunks, metadatas=[{"filename": filename}] * len(chunks))
-                    retriever = vectorstore.as_retriever()
-                    new_documents = retriever.invoke(state.userPrompt)
-                    new_documents = [d.page_content for d in new_documents]
-                    state.documents.extend(new_documents)
-                    return {"documents": state.documents}
-                else:
-                    return {"documents": []}
 
             system_prompt = """
                 You are an assistant for creating prompt for dall-e-3 model to create car image for sale based on the user prompt and retrieved context.
@@ -197,7 +176,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 return {"generation": generation}
 
             async def image_generation_node(state: GraphState):
-                welcome = 'Welcome image_generation_node--------------------'
+                welcome = 'Generating the image. Please wait.'
                 print(welcome)
                 await manager.send_response({'response': welcome}, websocket)
 
@@ -208,10 +187,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
                 image_url = response.data[0].url
-                await manager.send_response({'response': image_url}, websocket)
-
                 base64_image = process_image_to_base64(response.data[0].url)
-                await manager.send_response({'response': base64_image}, websocket)
+                await manager.send_response({'response': 'Image successfully generated.'}, websocket)
                 return {"image": base64_image, "imageGenerationNum": state.imageGenerationNum + 1}
 
             async def image_grade_node(state: GraphState):
@@ -244,8 +221,6 @@ async def websocket_endpoint(websocket: WebSocket):
             {imageAnalysis}
                
             """
-
-
             image_analysis_prompt = ChatPromptTemplate.from_messages(
                 [
                     ("system", system_prompt),
@@ -258,7 +233,7 @@ async def websocket_endpoint(websocket: WebSocket):
             )
 
             async def image_evaluation_node(state: GraphState):
-                welcome = "Welcome to image evaluation node-----------"
+                welcome = "Evaluating the generated image."
                 print(welcome)
                 await manager.send_response({'response': welcome}, websocket)
 
@@ -280,7 +255,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     return "not relevant"
 
             async def image_generation_feedback_node(state: GraphState):
-                welcome = "Welcome to image_generation_feedback_node-----------"
+                welcome = "Image generation feedback node."
                 print(welcome)
                 await manager.send_response({'response': welcome}, websocket)
 
@@ -303,6 +278,7 @@ async def websocket_endpoint(websocket: WebSocket):
             system_prompt = """
             Your role is to general subject and content body for mail based on the LLM generated image(base64 encoded) and userPrompt.
             In the content body dont include "please reply to this email or contact us" as it will be a system generated mail.
+            Include the context and the user prompt to generate the content body for the mail.
             Only provide subject and content body for mail and nothing else!
             """
 
@@ -310,6 +286,7 @@ async def websocket_endpoint(websocket: WebSocket):
             This is the userPrompt:
             {userPrompt}
             LLM generated image: {image}
+            context: {context}
             """
 
             mail_caption_subject_generation_feedback_prompt = ChatPromptTemplate.from_messages(
@@ -322,15 +299,16 @@ async def websocket_endpoint(websocket: WebSocket):
             mail_caption_subject_generation_feedback_chain = (
                 mail_caption_subject_generation_feedback_prompt
                 | llm_engine.with_structured_output(MailParams)
-
             )
 
             def mail_caption_subject_generation_node(state: GraphState):
-                print("Welcome to mail_caption_subject_generation_node-----------")
+                print("Generating email caption.")
                 mail_params = mail_caption_subject_generation_feedback_chain.invoke({
                     "userPrompt": state.userPrompt,
-                    "image": state.image
+                    "image": state.image,
+                    "context": feature_data
                 })
+                print(feature_data)
                 global mail_sub
                 global mail_cont
                 mail_sub = mail_params.subject
@@ -340,15 +318,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             pipeline = StateGraph(GraphState)
 
-            pipeline.add_node('retrieval_node', retriever_node)
             pipeline.add_node('prompt_generation_node', prompt_generation_node)
             pipeline.add_node('image_generation_node', image_generation_node)
             pipeline.add_node('image_grade_node', image_grade_node)
             pipeline.add_node('image_generation_feedback_node', image_generation_feedback_node)
             pipeline.add_node('mail_param_generation_node', mail_caption_subject_generation_node)
 
-            pipeline.add_edge(START, 'retrieval_node')
-            pipeline.add_edge('retrieval_node', 'prompt_generation_node')
+            pipeline.add_edge(START, 'prompt_generation_node')
             pipeline.add_edge('prompt_generation_node', 'image_generation_node')
             pipeline.add_edge('image_generation_node', 'image_grade_node')
             pipeline.add_conditional_edges(
@@ -369,14 +345,6 @@ async def websocket_endpoint(websocket: WebSocket):
             image_prompt=''
 
             outputs = await rag_pipeline.ainvoke(inputs)
-
-            # for output in outputs:
-            #     for key, value in output.items():
-            #         print(f"Node: {key}")
-            #         print(value)
-
-            if file is not None:
-                os.remove(file_path)
 
             await manager.send_response({"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, websocket)
             # return JSONResponse(content={"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, status_code=200)
@@ -400,7 +368,7 @@ async def file_process(file: UploadFile = File(...)):
     )
 
     file_ext = file.filename.split('.')[1]
-    file_name = f'{uuid.uuid4()}.{file_ext}'
+    file_name = f'file_{uuid.uuid4()}.{file_ext}'
     file_path = os.path.join(UPLOAD_FOLDER, file_name)
     with open(file_path, "wb") as temp_file:
         temp_file.write(await file.read())
@@ -455,12 +423,36 @@ async def file_process(file: UploadFile = File(...)):
         # Remove any markdown code block indicators if present
         response_text = response_text.replace('```json', '').replace('```', '').strip()
         feature_summary = json.loads(response_text)
-        # os.remove(file_path)
+        os.remove(file_path)
         feature_summary['filename'] = file_name
         return feature_summary
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON: {response_text}")
         raise e
+
+
+@app.post("/logo-process/")
+async def logo_process(logo: UploadFile = File(...), image: str = Form(...)):
+    try:
+        logo_ext = logo.filename.split('.')[1]
+        logo_name = f'logo_{uuid.uuid4()}.{logo_ext}'
+        logo_path = os.path.join(UPLOAD_FOLDER, logo_name)
+        with open(logo_path, "wb") as temp_file:
+            temp_file.write(await logo.read())
+
+        base64_code = image.split(',')[1]
+        img_data = base64_code.encode()
+        content = base64.b64decode(img_data)
+        image_name = f'image_{uuid.uuid4()}.png'
+        image_path = os.path.join(UPLOAD_FOLDER, image_name)
+        with open(image_path, 'wb') as fw:
+            fw.write(content)
+
+        superimposed_image = process_logo(logo_path, image_path)
+        return JSONResponse(content={"image": superimposed_image}, status_code=200)
+    except Exception as e:
+        print(repr(e))
+        raise HTTPException(status_code=500, detail=f"Failed to process logo: {str(e)}")
 
 
 @app.post("/send-mail/")
@@ -579,3 +571,40 @@ def send_email(subject, body, image,):
     except Exception as e:
         print(f'Error: {e}')
         return "Error"
+
+def process_logo(logo_path, image_path):
+    image = cv2.imread(image_path)
+    logo = cv2.imread(logo_path, cv2.IMREAD_UNCHANGED)  # Ensure transparency if the logo has alpha channel
+
+    # Check if images are loaded
+    if image is not None and logo is not None:
+        # Resize the logo
+        desired_logo_width = 75  # Adjust this value (e.g., 50 to 100)
+        scale_ratio = desired_logo_width / logo.shape[1]
+        new_logo_size = (desired_logo_width, int(logo.shape[0] * scale_ratio))
+        resized_logo = cv2.resize(logo, new_logo_size, interpolation=cv2.INTER_AREA)
+
+        # Get the top-right corner position
+        padding = 10  # Space from the edge
+        x_offset = image.shape[1] - resized_logo.shape[1] - padding
+        y_offset = padding
+
+        # Overlay the logo on the main image
+        # Check if the logo has an alpha channel (transparency)
+        if resized_logo.shape[2] == 4:  # RGBA
+            for c in range(0, 3):  # Iterate over RGB channels
+                image[y_offset:y_offset + resized_logo.shape[0], x_offset:x_offset + resized_logo.shape[1], c] = \
+                    image[y_offset:y_offset + resized_logo.shape[0], x_offset:x_offset + resized_logo.shape[1], c] * \
+                    (1 - resized_logo[:, :, 3] / 255.0) + resized_logo[:, :, c] * (resized_logo[:, :, 3] / 255.0)
+        else:
+            # If no alpha channel, simply overlay
+            image[y_offset:y_offset + resized_logo.shape[0], x_offset:x_offset + resized_logo.shape[1]] = resized_logo
+
+        # Save or display the result
+        cv2.imwrite('output_image_with_logo.jpg', image)
+        base64_string = base64.b64encode(cv2.imencode('.jpg', image)[1]).decode('utf-8')
+        os.remove(logo_path)
+        os.remove(image_path)
+        return "data:image/jpeg;base64," + base64_string
+    else:
+        print("Error: Image or logo not loaded. Check the file paths.")

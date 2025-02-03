@@ -18,6 +18,8 @@ python-multipart = "*"
 python-docx = "*"
 requests = "*"
 pillow = "*"
+opencv-python = "*"
+numpy = "*"
 
 [dev-packages]
 
