@@ -600,8 +600,6 @@ def process_logo(logo_path, image_path):
             # If no alpha channel, simply overlay
             image[y_offset:y_offset + resized_logo.shape[0], x_offset:x_offset + resized_logo.shape[1]] = resized_logo
 
-        # Save or display the result
-        cv2.imwrite('output_image_with_logo.jpg', image)
         base64_string = base64.b64encode(cv2.imencode('.jpg', image)[1]).decode('utf-8')
         os.remove(logo_path)
         os.remove(image_path)
