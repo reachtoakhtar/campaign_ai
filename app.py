@@ -186,7 +186,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 size="1024x1024",
                 )
 
-                image_url = response.data[0].url
                 base64_image = process_image_to_base64(response.data[0].url)
                 await manager.send_response({'response': 'Image successfully generated.'}, websocket)
                 return {"image": base64_image, "imageGenerationNum": state.imageGenerationNum + 1}
@@ -521,16 +520,13 @@ async def image_analysis(question, encoded_image, websocket):
     ENDPOINT = os.getenv('ENDPOINT')
     # Send request
     try:
-        await manager.send_response({'response': 'Sending generated image for analysis.'}, websocket)
+        await manager.send_response({'response': 'Analysing the generated image.'}, websocket)
         response = requests.post(ENDPOINT, headers=headers, json=payload)
         response.raise_for_status()  # Will raise an HTTPError if the HTTP request returned an unsuccessful status code
     except requests.RequestException as e:
         raise SystemExit(f"Failed to make the request. Error: {e}")
 
-    # Handle the response as needed (e.g., print or process)
     output = response.json()
-    await manager.send_response(response.json(), websocket)
-
     return output['choices'][0]['message']['content']
 
 def send_email(subject, body, image,):
