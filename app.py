@@ -116,16 +116,20 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
+            images = {'accepted': [], 'rejected': []}
             input_text = ''
-            feature_data = {}
-            file = None
+            target_audiences = []
+            features = []
+            image_resolutions = []
             try:
                 data = await websocket.receive_json()
                 input_text = data.get("prompt")
-                feature_data = data.get('features')
-                await manager.send_response(
-                    {'data': data, 'input_text': input_text, 'feature_data': feature_data},
-                    websocket)
+                target_audiences = data.get('targetAudiences')
+                features = data.get('features')
+                image_resolutions = data.get('imageResolutions')
+                # await manager.send_response(
+                #     {'data': data, 'input_text': input_text, 'feature_data': feature_data},
+                #     websocket)
             except Exception:
                 print('Data Error.')
                 await manager.send_response({'response': 'Data Error.'}, websocket)
@@ -181,12 +185,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 await manager.send_response({'response': welcome}, websocket)
 
                 response = client.images.generate(
-                model=os.getenv('AZURE_OPENAI_DALLE_DEPLOYMENT_NAME'),
-                prompt=state.generation,
-                size="1024x1024",
+                    model=os.getenv('AZURE_OPENAI_DALLE_DEPLOYMENT_NAME'),
+                    prompt=state.generation,
+                    size="1024x1024",
                 )
 
-                base64_image = process_image_to_base64(response.data[0].url)
+                base64_image = process_image_to_base64(response.data[0].url, image_resolutions)
                 await manager.send_response({'response': 'Image successfully generated.'}, websocket)
                 return {"image": base64_image, "imageGenerationNum": state.imageGenerationNum + 1}
 
@@ -239,18 +243,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 image_analysis_grade = image_analysis_grader.invoke(
                     {"imageAnalysis": state.imageAnalysis}
                 )
-                global image_stream
                 if image_analysis_grade.grade.lower() == 'yes':
-                    image_stream=state.image
+                    images['accepted'].append(state.image)
                     return "useful"
                 elif state.imageGenerationNum > MAX_GENERATIONS:
-                    image_stream=state.image
+                    images['accepted'].append(state.image)
                     global mail_sub
                     global mail_cont
                     mail_sub = ''
                     mail_cont = ''
                     return "max_image_generation_reached"
                 else:
+                    images['rejected'].append(state.image)
+                    await manager.send_response({"rejected_images": images['rejected']}, websocket)
                     return "not relevant"
 
             async def image_generation_feedback_node(state: GraphState):
@@ -305,9 +310,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 mail_params = mail_caption_subject_generation_feedback_chain.invoke({
                     "userPrompt": state.userPrompt,
                     "image": state.image,
-                    "context": feature_data
+                    "context": features.extend(target_audiences)
                 })
-                print(feature_data)
                 global mail_sub
                 global mail_cont
                 mail_sub = mail_params.subject
@@ -345,7 +349,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             outputs = await rag_pipeline.ainvoke(inputs)
 
-            await manager.send_response({"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, websocket)
+            await manager.send_response({"images": images, "mailSubject": mail_sub, "mailContent": mail_cont}, websocket)
             # return JSONResponse(content={"image": image_stream, "mailSubject": mail_sub, "mailContent": mail_cont}, status_code=200)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -383,18 +387,24 @@ async def file_process(file: UploadFile = File(...)):
     chunks = file_text_splitter.split_text(docx_text)
     combined_text = " ".join(chunks)
 
-    # First, identify the product type and relevant categories
+    # First, identify the product type, categories, and target audience
     category_messages = [
         {"role": "system", "content": """Analyze the text and identify:
-        1. The type of product being described
-        2. The most relevant 4-6 main feature categories for this type of product
+          1. The type of product being described
+          2. The most relevant 4-6 main feature categories for this type of product
+          3. The most relevant 4-6  target market audience for this type of product
 
-        Return ONLY a JSON object in this exact format:
-        {"product_type": "type", "categories": ["category1", "category2", "category3"]}"""},
+          Return ONLY a JSON object in this exact format:
+          {
+              "product_type": "type",
+              "categories": ["category1", "category2", "category3"],
+              "target_audience": ["audience1", "audience2"]
+          }"""},
         {"role": "user", "content": combined_text}
     ]
 
     category_response = llm_engine.generate([category_messages])
+
     # Clean and parse JSON response
     try:
         response_text = category_response.generations[0][0].text.strip()
@@ -405,26 +415,40 @@ async def file_process(file: UploadFile = File(...)):
         print(f"Error parsing JSON: {response_text}")
         raise e
 
-    # Now get summaries based on identified categories
+    # Now get summaries based on identified categories and audience
     summary_messages = [
-        {"role": "system", "content": f"""For this {product_info['product_type']}, provide a brief highlight 
-        for each of these categories: {', '.join(product_info['categories'])}
+        {"role": "system", "content": f"""For this {product_info['product_type']}, provide:
+           1. A brief highlight for each of these categories: {', '.join(product_info['categories'])}
+           2. Key characteristics of the target audience: {', '.join(product_info['target_audience'])}
 
-        Return ONLY a JSON object where keys are the categories and values are brief highlights under 10 words each.
-        Example format: {{"category1": "highlight1", "category2": "highlight2"}}"""},
+           Return ONLY a JSON object in this format:
+           {{
+               "features": {{"category1": "highlight1", "category2": "highlight2"}},
+               "audience_characteristics": {{"audience1": "characteristic1", "audience2": "characteristic2"}}
+           }}"""},
         {"role": "user", "content": combined_text}
     ]
 
     summary_response = llm_engine.generate([summary_messages])
+
     # Clean and parse JSON response
     try:
         response_text = summary_response.generations[0][0].text.strip()
         # Remove any markdown code block indicators if present
         response_text = response_text.replace('```json', '').replace('```', '').strip()
-        feature_summary = json.loads(response_text)
+        analysis_results = json.loads(response_text)
         os.remove(file_path)
-        feature_summary['filename'] = file_name
-        return feature_summary
+
+        # Combine all results into a final output
+        final_analysis = {
+            "product_type": product_info["product_type"],
+            "feature_summary": analysis_results["features"],
+            "target_audience": {
+                "segments": product_info["target_audience"],
+                "characteristics": analysis_results["audience_characteristics"]
+            }
+        }
+        return final_analysis
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON: {response_text}")
         raise e
@@ -464,11 +488,13 @@ async def send_mail(subject: str = Form(...), body: str = Form(...), image: str 
         print(repr(e))
         raise HTTPException(status_code=500, detail=f"Failed to send mail: {str(e)}")
 
-def process_image_to_base64(url):
+def process_image_to_base64(url, image_resolutions):
   response = requests.get(url)
   image_bytes = io.BytesIO(response.content)
   img = Image.open(image_bytes)
-  img = img.resize((512, 512), Image.Resampling.LANCZOS)
+  width = image_resolutions[0]['width']
+  height = image_resolutions[0]['height']
+  img = img.resize((width, height), Image.Resampling.LANCZOS)
   jpeg_image = io.BytesIO()
   img.save(jpeg_image, format='JPEG')
   jpeg_image.seek(0)
