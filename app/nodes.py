@@ -27,7 +27,6 @@ class GraphState(BaseModel):
     generation: Optional[str] = None
     documents: List[str] = []
     image: Optional[str] = None
-    images: dict[str, str, str] = None
     imageAnalysis: Optional[str] = None
     imageGeneratefeedbacks: Optional[str] = None
     imageGenerationNum: int = 0
@@ -84,8 +83,14 @@ def prompt_generation_node(state: GraphState):
     )
 
     rag_chain = rag_prompt | llm_engine | StrOutputParser()
+    target_aud = []
+    try:
+        target_aud = state.target_audiences[0]
+    except IndexError:
+        pass
+
     generation = rag_chain.invoke({
-        "context": "\n\n".join(state.documents),
+        "context": "\n\n".join(state.documents).join(target_aud),
         "userPrompt": state.user_prompt,
         "feedback": state.imageGeneratefeedbacks
     })
@@ -133,16 +138,13 @@ async def image_evaluation_node(state: GraphState):
     await manager.send_response({'response': welcome}, state.websocket)
 
     system_prompt = """
-    You are an AI assistant that gives 'yes' or 'no' along with the reason from the image analysis provided. Dont formulate the reason,
-    just give the reason provided in image analysis input.
-
-    """
+       You are an AI assistant that gives 'yes' or 'no' along with the reason from the image analysis provided. Don't formulate the reason,
+       just give the reason provided in the image analysis input.
+       """
     human_prompt = """
-
-    This is the image analysis:
-    {imageAnalysis}
-
-    """
+       This is the image analysis:
+       {imageAnalysis}
+       """
     image_analysis_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
@@ -154,6 +156,7 @@ async def image_evaluation_node(state: GraphState):
         | llm_engine.with_structured_output(GradeAnalysis)
     )
 
+    # Invoke the image analysis grader
     image_analysis_grade = image_analysis_grader.invoke(
         {"imageAnalysis": state.imageAnalysis}
     )

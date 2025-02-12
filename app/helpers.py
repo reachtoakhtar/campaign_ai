@@ -11,8 +11,6 @@ import requests
 from PIL import Image
 from dotenv import load_dotenv
 
-from app import manager
-
 load_dotenv()
 
 def process_image_to_base64(url, image_resolution):
